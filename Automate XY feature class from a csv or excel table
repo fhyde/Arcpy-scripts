@@ -1,0 +1,132 @@
+#------------------------------------------------------
+# F.Hyde 2015
+#----------------------------------------------------------------
+import arcpy
+from time import strftime
+from arcpy import env
+import os
+import sys
+import numpy
+import math
+from math import hypot
+rec = 0
+
+
+#--------------DEFINE VARIABLES---------------
+#Set source folder for data
+OutWorkspace = arcpy.GetParameterAsText(0)
+#Set project number
+In_ProjectNumber = arcpy.GetParameterAsText(1)
+#input table (csv, txt, excel)
+in_XY_Table = arcpy.GetParameterAsText(2)
+#find the XLong and YLat fields
+Long_Xfield = arcpy.GetParameterAsText(3) #tool parameters set to search for DOUBLE
+Lat_Yfield = arcpy.GetParameterAsText(4) #tool parameters set to search for DOUBLE
+#set new feature class name
+NewPointFC_Name = arcpy.GetParameterAsText(5)
+#Set the spatial reference - default to WGS84 "4326"
+Input_SpatialRef = arcpy.GetParameterAsText(6)
+
+#add and fill attribute table fields and values
+input_descr = arcpy.GetParameterAsText(7)
+input_source = arcpy.GetParameterAsText(8)
+input_notes = arcpy.GetParameterAsText(9)
+
+#make XY event layer
+Temp_EventLayer = arcpy.MakeXYEventLayer_management(in_XY_Table, Long_Xfield, Lat_Yfield, "Output_EventLayer", Input_SpatialRef)
+		
+#set feature class name structure		
+FeatureClass = 'FMH_'+ str(In_ProjectNumber) +  '_' + str(NewPointFC_Name) + '_' + strftime("%y%m%d")
+
+#Set folder path for new fc
+outfc = os.path.join(OutWorkspace,FeatureClass)
+#Copy the temp point layer to feature class with name and path parameters
+FC = arcpy.CopyFeatures_management(Temp_EventLayer, outfc)
+
+
+arcpy.Delete_management(Temp_EventLayer)
+
+
+
+#--------------Add  FIELDS---------------------------
+# add fields
+
+narray = numpy.array([], numpy.dtype([('_ID',numpy.int),('Descr','|S100'),('Source','|S80'), ('Notes','|S150'),('VerDate','|S12'),('Sequence',numpy.float),('xDD',numpy.float64),('yDD',numpy.float64),]))
+
+arcpy.da.ExtendTable(FC,"OID@",narray,"_ID")
+
+
+with arcpy.da.UpdateCursor(FC,["Descr"]) as cursor:
+	for row in cursor:
+		row[0] = input_descr
+		cursor.updateRow(row)
+del row
+
+with arcpy.da.UpdateCursor(FC,["Source"]) as cursor:
+	for row1 in cursor:
+		row1[0] = input_source
+		cursor.updateRow(row1)
+del row1
+			
+with arcpy.da.UpdateCursor(FC,["Notes"]) as cursor:
+	for row2 in cursor:
+		row2[0] = input_notes
+		cursor.updateRow(row2)
+del row2
+			
+#add the current date the VerDate field
+arcpy.CalculateField_management(FC,"VerDate","'V'" + strftime("'%Y-%m-%d'"),"PYTHON_9.3","")
+
+#autoincrement, source: http://gis.stackexchange.com/questions/57300/how-can-you-auto-increment-in-a-python-script-not-field-calculator
+
+
+def autoIncrement(pStart = 1, pInterval = 1): #using default values - can be changed as parameters.
+
+	global rec
+	if (rec == 0):
+		rec = pStart
+		return rec
+	else:
+		rec += pInterval
+		return rec
+incrementCursor = arcpy.UpdateCursor(FC)
+for row4 in incrementCursor:
+	row4.setValue("Sequence", str(autoIncrement()))
+	incrementCursor.updateRow(row4)
+		
+del incrementCursor
+
+#----------------------------------------------------
+
+#add fields xDD and yDD with WGS84 spatial reference
+#populate xDD and yDD with decimal degree coordinates.
+#source: http://gis.stackexchange.com/questions/29478/how-to-calculate-xy-coordinates-in-decimal-degrees-from-projected-dataset-in-mod
+#source: http://gisstudio.wordpress.com/2013/04/29/calc-the-latlong-of-a-point-in-python-using-new-arcpy-tools/
+
+#desc = arcpy.Describe(in_featureClass)
+type = arcpy.Describe(FC).shapetype.upper()
+if type == "POINT":
+    sr = arcpy.SpatialReference(4326)
+    updCursor = arcpy.UpdateCursor(FC,"",sr)
+    for row6 in updCursor:
+        pnt = row6.Shape.getPart(0)
+        row6.xDD = pnt.X
+        row6.yDD = pnt.Y
+        updCursor.updateRow(row6)
+    del updCursor, row6
+
+
+#-----------------add the layer to data frame--------------------------
+#source: http://gis.stackexchange.com/questions/62896/how-to-add-feature-class-to-mxd-with-arcpy-python
+#convert your feature class to a layer.  FeatureClass variable is the name you gave it.
+arcpy.MakeFeatureLayer_management(FC,FeatureClass)
+#set your document path
+MXD = arcpy.mapping.MapDocument("CURRENT")
+#List data frames
+DF = arcpy.mapping.ListDataFrames(MXD)[0]
+#Add your new layer to the data frame TOC
+LayerNew = arcpy.mapping.Layer(FeatureClass)
+arcpy.mapping.AddLayer(DF,LayerNew,"TOP")
+arcpy.RefreshActiveView()
+MXD.save()
+del MXD 
